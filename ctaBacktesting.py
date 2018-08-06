@@ -119,25 +119,28 @@ class BacktestingEngine(object):
     #------------------------------------------------
     
     #----------------------------------------------------------------------
-    def setStartDate(self, startDate='20100416', initDays=10):
+    def setStartDate(self, startDate='20100416', initDays=10, diffDays=0):
         """设置回测的启动日期"""
         self.startDate = startDate
         self.initDays = initDays
         
-        self.dataStartDate = datetime.strptime(startDate, '%Y%m%d')
+        diffDaysDelta = timedelta(diffDays)
+        self.dataStartDate = datetime.strptime(startDate, '%Y%m%d') + diffDaysDelta
         
         initTimeDelta = timedelta(initDays)
         self.strategyStartDate = self.dataStartDate + initTimeDelta
         
     #----------------------------------------------------------------------
-    def setEndDate(self, endDate=''):
+    def setEndDate(self, endDate='', diffDays=0):
         """设置回测的结束日期"""
         self.endDate = endDate
         
         if endDate:
-            self.dataEndDate = datetime.strptime(endDate, '%Y%m%d')
+            diffDaysDelta = timedelta(diffDays)
+            self.dataEndDate = datetime.strptime(endDate, '%Y%m%d') + diffDaysDelta
             
             # 若不修改时间则会导致不包含dataEndDate当天数据
+            
             self.dataEndDate = self.dataEndDate.replace(hour=23, minute=59)    
         
     #----------------------------------------------------------------------
@@ -209,7 +212,7 @@ class BacktestingEngine(object):
         self.output(u'开始读取CSV文件')
     
         # 读取数据和插入到数据库
-        f = open(r'D:\project\vnpy\vnpy\trader\app\ctaStrategy\bitstampUSD.csv',"r")
+        f = open(r'C:\Users\ut2auj\Documents\Private\python\vnpy1\examples\CtaBacktesting\bitstampUSD.csv',"r")
         reader = csv.reader(f)
         i = 0
         
@@ -222,7 +225,8 @@ class BacktestingEngine(object):
             tick.date = tick.datetime.date().strftime('%Y%m%d')
             tick.time = tick.datetime.time().strftime('%H:%M:%S')
     
-            tick.lastPrice = float(d[1])
+            # convert BTCUSD to USDBTC
+            tick.lastPrice = 1 / float(d[1])
             tick.lastVolume = float(d[2])
     
             data = dataClass()
@@ -277,7 +281,7 @@ class BacktestingEngine(object):
 
         # for d in self.dbCursor:
         import csv
-        f = open(r'D:\project\vnpy\vnpy\trader\app\ctaStrategy\bitstampUSD.csv',"r")
+        f = open(r'C:\Users\ut2auj\Documents\Private\python\vnpy1\examples\CtaBacktesting\bitstampUSD.csv',"r")
         reader = csv.reader(f)
         i = 0
         
@@ -287,10 +291,13 @@ class BacktestingEngine(object):
             tick.symbol = 'bitstampUSD'
     
             tick.datetime = datetime.strptime(datetime.fromtimestamp(int(d[0])).strftime('%Y-%m-%d %H:%M:%S'), '%Y-%m-%d %H:%M:%S')
+            if tick.datetime.date() < self.dataStartDate.date() or tick.datetime.date() > self.dataEndDate.date():
+                continue
             tick.date = tick.datetime.date().strftime('%Y%m%d')
             tick.time = tick.datetime.time().strftime('%H:%M:%S')
     
-            tick.lastPrice = float(d[1])
+            # convert BTCUSD to USDBTC
+            tick.lastPrice = 1 / float(d[1])
             tick.lastVolume = float(d[2])
     
             data = dataClass()
@@ -967,7 +974,7 @@ class BacktestingEngine(object):
         l = []
 
         for setting in settingList:
-            l.append(pool.apply_async(optimize, (strategyClass, setting,
+            l.append(pool.apply_async(testDates, (strategyClass, setting,
                                                  targetName, self.mode, 
                                                  self.startDate, self.initDays, self.endDate,
                                                  self.slippage, self.rate, self.size, self.priceTick,
@@ -982,6 +989,52 @@ class BacktestingEngine(object):
         self.output(u'优化结果：')
         for result in resultList:
             self.output(u'参数：%s，目标：%s' %(result[0], result[1]))    
+            
+        return resultList
+
+    #----------------------------------------------------------------------
+    def runParallelTestDates(self, strategyClass, diffDaysSetting, strategySetting=None):
+        """并行优化参数"""
+        # 获取优化设置        
+        diffDaysList = diffDaysSetting.generateSetting()
+        targetName = diffDaysSetting.optimizeTarget
+        
+        # 检查参数设置问题
+        if not diffDaysList or not targetName:
+            self.output(u'优化设置有问题，请检查')
+        
+        # 多进程优化，启动一个对应CPU核心数量的进程池
+        pool = multiprocessing.Pool(multiprocessing.cpu_count())
+        l = []
+        
+        resultList = []
+
+        for diffDaysDict in diffDaysList:
+            diffDays = diffDaysDict.values()[0]
+            #l.append(pool.apply_async(testDates, (strategyClass, strategySetting,
+                                                 #targetName, self.mode, 
+                                                 #self.startDate, self.initDays, self.endDate, diffDays,
+                                                 #self.slippage, self.rate, self.size, self.priceTick,
+                                                 #self.dbName, self.symbol)))
+            resultList.append(testDates(strategyClass, strategySetting, targetName, self.mode, 
+                                        self.startDate, self.initDays, self.endDate, diffDays,
+                                        self.slippage, self.rate, self.size, self.priceTick,
+                                        self.dbName, self.symbol))   
+            
+        #pool.close()
+        #pool.join()
+        
+        ## 显示结果
+        #resultList = [res.get() for res in l]
+        #resultList.sort(reverse=True, key=lambda result:result[1])
+        
+        self.output('-' * 30)
+        self.output(u'优化结果：')
+        for result in resultList:
+            self.output(u'参数：%s，目标：%s' %(result[0], result[1]))
+            self.showDailyResult(result[2], result[3])
+        
+   
             
         return resultList
 
@@ -1348,5 +1401,31 @@ def optimize(strategyClass, setting, targetName,
         targetValue = d[targetName]
     except KeyError:
         targetValue = 0            
-    return (str(setting), targetValue, d)    
+    return (str(setting), targetValue, d) 
+
+#----------------------------------------------------------------------
+def testDates(strategyClass, setting, targetName,
+             mode, startDate, initDays, endDate, diffDays,
+             slippage, rate, size, priceTick,
+             dbName, symbol):
+    """多进程优化时跑在每个进程中运行的函数"""
+    engine = BacktestingEngine()
+    engine.setBacktestingMode(mode)
+    engine.setStartDate(startDate, initDays, diffDays)
+    engine.setEndDate(endDate, diffDays)
+    engine.setSlippage(slippage)
+    engine.setRate(rate)
+    engine.setSize(size)
+    engine.setPriceTick(priceTick)
+    engine.setDatabase(dbName, symbol)
     
+    engine.initStrategy(strategyClass, setting)
+    engine.runBacktesting()
+    
+    df = engine.calculateDailyResult()
+    df, d = engine.calculateDailyStatistics(df)
+    try:
+        targetValue = d[targetName]
+    except KeyError:
+        targetValue = 0            
+    return (diffDays, targetValue, df, d) 
